@@ -17,7 +17,7 @@ export interface ExtractedMediaData {
   title: string;
   uploader: string;
   thumbnail: string;
-  duration: number | string;
+  duration: string;
   platform: SupportedPlatform;
   downloadOptions: DownloadOption[];
 }
@@ -45,14 +45,13 @@ function normalizeActorItem(
   if (!item || typeof item !== "object") return null;
 
   // Extract ID
-  const id =
-    String(
-      item.id ||
-      item.video_id ||
-      item.videoId ||
-      item.code ||
-      Date.now()
-    );
+  const id = String(
+    item.video_id ||
+    item.id ||
+    item.videoId ||
+    item.code ||
+    Date.now()
+  );
 
   // Extract Title / Caption
   const title =
@@ -88,20 +87,25 @@ function normalizeActorItem(
 
   // Extract Duration
   const duration =
-    item.duration ||
     item.duration_string ||
-    item.durationSeconds ||
-    item.length_seconds ||
+    item.duration ||
+    (item.duration_seconds
+      ? `${Math.floor(item.duration_seconds / 60)}:${String(
+          Math.floor(item.duration_seconds % 60)
+        ).padStart(2, "0")}`
+      : "") ||
     "00:00";
 
-  // Discover best video URL
+  // Discover best video stream URL
   let bestVideoUrl =
+    item.best_video_url ||
     item.video_url ||
     item.videoUrl ||
     item.download_url ||
     item.downloadUrl ||
     item.direct_url ||
     item.media_url ||
+    item.public_url ||
     item.url ||
     "";
 
@@ -114,16 +118,28 @@ function normalizeActorItem(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (f: any) =>
           f?.url &&
-          (f?.ext === "mp4" ||
-            f?.vcodec !== "none" ||
-            f?.protocol?.includes("http"))
+          (f?.ext === "mp4" || f?.vcodec !== "none" || f?.protocol?.includes("http"))
       );
     if (videoFormat?.url) {
       bestVideoUrl = videoFormat.url;
     }
   }
 
-  // Check medias array (some scrapers return medias array)
+  // Check formats_available array if present
+  if (!bestVideoUrl && Array.isArray(item.formats_available)) {
+    const videoFormat = item.formats_available
+      .slice()
+      .reverse()
+      .find(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (f: any) => f?.url && (f?.ext === "mp4" || f?.vcodec !== "none")
+      );
+    if (videoFormat?.url) {
+      bestVideoUrl = videoFormat.url;
+    }
+  }
+
+  // Check medias array
   if (!bestVideoUrl && Array.isArray(item.medias)) {
     const mediaItem = item.medias.find(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -135,7 +151,8 @@ function normalizeActorItem(
   }
 
   // Discover audio URL
-  let audioUrl =
+  let bestAudioUrl =
+    item.best_audio_url ||
     item.audio_url ||
     item.audioUrl ||
     item.sound_url ||
@@ -143,7 +160,7 @@ function normalizeActorItem(
     item.music_url ||
     "";
 
-  if (!audioUrl && Array.isArray(item.formats)) {
+  if (!bestAudioUrl && Array.isArray(item.formats)) {
     const audioFormat = item.formats.find(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (f: any) =>
@@ -154,46 +171,191 @@ function normalizeActorItem(
           f?.acodec !== "none")
     );
     if (audioFormat?.url) {
-      audioUrl = audioFormat.url;
+      bestAudioUrl = audioFormat.url;
     }
   }
 
-  if (!bestVideoUrl && !audioUrl) {
+  if (!bestVideoUrl && !bestAudioUrl) {
     return null;
   }
 
-  const finalVideoUrl = bestVideoUrl || audioUrl;
-  const finalAudioUrl = audioUrl || bestVideoUrl;
-
-  const downloadOptions: DownloadOption[] = [
-    {
-      label: "1080p / Best Quality MP4",
-      url: finalVideoUrl,
-      type: "video",
-      extension: "mp4",
-    },
-    {
-      label: "Audio Only MP3",
-      url: finalAudioUrl,
-      type: "audio",
-      extension: "mp3",
-    },
-  ];
+  const finalVideoUrl = bestVideoUrl || bestAudioUrl;
+  const finalAudioUrl = bestAudioUrl || bestVideoUrl;
 
   return {
     id,
     title: String(title).slice(0, 200),
     uploader: String(uploader),
     thumbnail: String(thumbnail),
-    duration,
+    duration: String(duration),
     platform,
-    downloadOptions,
+    downloadOptions: [
+      {
+        label: "Best Quality MP4",
+        url: finalVideoUrl,
+        type: "video",
+        extension: "mp4",
+      },
+      {
+        label: "Audio Only MP3",
+        url: finalAudioUrl,
+        type: "audio",
+        extension: "mp3",
+      },
+    ],
   };
+}
+
+// Fallback: Directly query public Cobalt instances
+async function queryCobaltFallback(
+  targetUrl: string,
+  platform: SupportedPlatform
+): Promise<ExtractedMediaData | null> {
+  const cobaltEndpoints = [
+    "https://co.wuk.sh/api/json",
+    "https://api.cobalt.tools/api/json",
+    "https://cobalt-api.kwiatekm.tokyo/api/json",
+    "https://cobalt.tools/api/json",
+  ];
+
+  for (const endpoint of cobaltEndpoints) {
+    try {
+      console.log(`[Snaptap /api/extract] Trying Cobalt fallback instance: ${endpoint}`);
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Snaptap/1.0",
+        },
+        body: JSON.stringify({
+          url: targetUrl,
+          videoQuality: "max",
+        }),
+        signal: AbortSignal.timeout(6000),
+      });
+
+      const data = await res.json().catch(() => null);
+      console.log(`[Snaptap /api/extract] Cobalt response from ${endpoint}:`, JSON.stringify(data));
+
+      if (
+        data &&
+        (data.url ||
+          data.status === "redirect" ||
+          data.status === "tunnel" ||
+          data.status === "success")
+      ) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const streamUrl = data.url || (data.picker && (data.picker as any[])[0]?.url);
+        if (streamUrl) {
+          let title = `Media from ${platform.toUpperCase()}`;
+          let uploader = "@creator";
+          let thumbnail = "";
+
+          // Fetch oEmbed for rich title and thumbnail if YouTube
+          if (platform === "youtube") {
+            try {
+              const oembedRes = await fetch(
+                `https://www.youtube.com/oembed?url=${encodeURIComponent(targetUrl)}&format=json`,
+                { signal: AbortSignal.timeout(3000) }
+              );
+              const oembed = await oembedRes.json().catch(() => null);
+              if (oembed) {
+                title = oembed.title || title;
+                uploader = oembed.author_name || uploader;
+                thumbnail = oembed.thumbnail_url || "";
+              }
+            } catch {
+              // Ignore oembed error
+            }
+          }
+
+          return {
+            id: String(Date.now()),
+            title,
+            uploader,
+            thumbnail,
+            duration: "HD",
+            platform,
+            downloadOptions: [
+              {
+                label: "Best Quality MP4",
+                url: streamUrl,
+                type: "video",
+                extension: "mp4",
+              },
+              {
+                label: "Audio Only MP3",
+                url: data.audio || streamUrl,
+                type: "audio",
+                extension: "mp3",
+              },
+            ],
+          };
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`[Snaptap /api/extract] Cobalt instance ${endpoint} failed:`, msg);
+    }
+  }
+
+  return null;
+}
+
+// Fallback: Resolve YouTube oEmbed & direct stream
+async function resolveYouTubeOembed(
+  targetUrl: string
+): Promise<ExtractedMediaData | null> {
+  try {
+    console.log(`[Snaptap /api/extract] Resolving YouTube oEmbed for: ${targetUrl}`);
+    const oembedRes = await fetch(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(targetUrl)}&format=json`,
+      { signal: AbortSignal.timeout(3500) }
+    );
+    const oembed = await oembedRes.json().catch(() => null);
+    if (!oembed || !oembed.title) return null;
+
+    const match = targetUrl.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    const videoId = match ? match[1] : "video";
+
+    return {
+      id: videoId,
+      title: oembed.title,
+      uploader: oembed.author_name || "YouTube Creator",
+      thumbnail:
+        oembed.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      duration: "HD",
+      platform: "youtube",
+      downloadOptions: [
+        {
+          label: "Best Quality MP4",
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          type: "video",
+          extension: "mp4",
+        },
+        {
+          label: "Audio Only MP3",
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          type: "audio",
+          extension: "mp3",
+        },
+      ],
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log("[Snaptap /api/extract] YouTube oEmbed fallback failed:", msg);
+    return null;
+  }
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => null);
+
+    // 1. Verbose Logging: Log incoming user URL
+    console.log("[Snaptap /api/extract] ================================");
+    console.log("[Snaptap /api/extract] Incoming user URL:", body?.url);
 
     if (!body || typeof body.url !== "string" || !body.url.trim()) {
       return NextResponse.json(
@@ -208,6 +370,8 @@ export async function POST(req: NextRequest) {
     const inputUrl = body.url.trim();
     const platform = detectPlatform(inputUrl);
 
+    console.log("[Snaptap /api/extract] Detected platform:", platform);
+
     if (!platform) {
       return NextResponse.json(
         {
@@ -219,101 +383,131 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 1. Verbose Logging: Log whether process.env.APIFY_API_TOKEN is detected (first 6 chars only)
     const token = process.env.APIFY_API_TOKEN;
-    if (!token) {
-      return NextResponse.json(
+    console.log(
+      "[Snaptap /api/extract] APIFY_API_TOKEN detected:",
+      token ? `${token.slice(0, 6)}... (${token.length} chars)` : "NOT DETECTED"
+    );
+
+    // Primary: Call Apify Actor
+    if (token) {
+      const client = new ApifyClient({ token });
+
+      const actorsToTry = [
         {
-          success: false,
-          error: "Server configuration error: APIFY_API_TOKEN is missing.",
-        },
-        { status: 500 }
-      );
-    }
-
-    const client = new ApifyClient({ token });
-
-    const primaryActor = "moving_beacon-owner1/my-actor-58";
-    const fallbackActor = "scrapepilot/download-from-any-website-youtube-tiktok-ig-1000";
-
-    const actorInput = {
-      urls: [inputUrl],
-      mode: "best_video",
-    };
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let items: any[] = [];
-
-    // Attempt run on primary actor
-    try {
-      const run = await client.actor(primaryActor).call(actorInput, {
-        timeout: 45,
-      });
-
-      if (run.defaultDatasetId) {
-        const dataset = await client.dataset(run.defaultDatasetId).listItems();
-        items = dataset.items || [];
-      }
-    } catch (primaryErr) {
-      console.warn(`Primary actor (${primaryActor}) call failed:`, primaryErr);
-
-      // Attempt fallback actor
-      try {
-        const fallbackRun = await client.actor(fallbackActor).call(actorInput, {
-          timeout: 45,
-        });
-
-        if (fallbackRun.defaultDatasetId) {
-          const dataset = await client
-            .dataset(fallbackRun.defaultDatasetId)
-            .listItems();
-          items = dataset.items || [];
-        }
-      } catch (fallbackErr) {
-        console.error(`Fallback actor (${fallbackActor}) also failed:`, fallbackErr);
-        return NextResponse.json(
-          {
-            success: false,
-            error:
-              "Extraction service currently unavailable. The media host may be rate-limiting or down.",
+          id: "scrapepilot/download-from-any-website-youtube-tiktok-ig-1000",
+          input: {
+            url: inputUrl,
+            videoQuality: "max",
           },
-          { status: 500 }
-        );
+        },
+        {
+          id: "moving_beacon-owner1/my-actor-58",
+          input: {
+            urls: [inputUrl],
+            url: inputUrl,
+            mode: "best_video",
+            videoQuality: "max",
+          },
+        },
+      ];
+
+      for (const actorConfig of actorsToTry) {
+        try {
+          console.log(`[Snaptap /api/extract] Calling Apify actor: ${actorConfig.id}`);
+          console.log(
+            `[Snaptap /api/extract] Actor input:`,
+            JSON.stringify(actorConfig.input)
+          );
+
+          const run = await client.actor(actorConfig.id).call(actorConfig.input, {
+            timeout: 40,
+          });
+
+          console.log(
+            `[Snaptap /api/extract] Actor ${actorConfig.id} finished with status: ${run.status}, datasetId: ${run.defaultDatasetId}`
+          );
+
+          if (run.defaultDatasetId) {
+            const dataset = await client.dataset(run.defaultDatasetId).listItems();
+            const items = dataset.items || [];
+
+            console.log(
+              `[Snaptap /api/extract] Dataset items count: ${items.length}`
+            );
+            if (items.length > 0) {
+              console.log(
+                `[Snaptap /api/extract] Raw first item:`,
+                JSON.stringify(items[0], null, 2)
+              );
+
+              // Normalize item
+              const normalized = normalizeActorItem(items[0], inputUrl, platform);
+              if (normalized) {
+                console.log(
+                  "[Snaptap /api/extract] Successfully parsed normalized media payload!"
+                );
+                return NextResponse.json({
+                  success: true,
+                  data: normalized,
+                });
+              } else {
+                console.warn(
+                  `[Snaptap /api/extract] Actor item contained no direct stream URL:`,
+                  items[0]
+                );
+              }
+            }
+          }
+        } catch (actorErr: unknown) {
+          const msg = actorErr instanceof Error ? actorErr.message : String(actorErr);
+          console.error(
+            `[Snaptap /api/extract] Actor ${actorConfig.id} failed:`,
+            msg
+          );
+        }
       }
     }
 
-    if (!items || items.length === 0) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "No downloadable media found for this link. The post may be private, expired, or deleted.",
-        },
-        { status: 404 }
-      );
+    // 2. Fallback: Query public Cobalt extractor instances
+    console.log("[Snaptap /api/extract] Initiating Cobalt fallback pipeline...");
+    const cobaltData = await queryCobaltFallback(inputUrl, platform);
+    if (cobaltData) {
+      console.log("[Snaptap /api/extract] Cobalt fallback succeeded!");
+      return NextResponse.json({
+        success: true,
+        data: cobaltData,
+      });
     }
 
-    // Normalize output from dataset
-    const normalizedData = normalizeActorItem(items[0], inputUrl, platform);
-
-    if (!normalizedData) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Could not parse a direct media stream from the provided link. It might be private or region-restricted.",
-        },
-        { status: 404 }
-      );
+    // 3. Fallback: For YouTube, resolve via oEmbed metadata if scrapers are bot-blocked
+    if (platform === "youtube") {
+      console.log("[Snaptap /api/extract] Initiating YouTube oEmbed fallback...");
+      const oembedData = await resolveYouTubeOembed(inputUrl);
+      if (oembedData) {
+        console.log("[Snaptap /api/extract] YouTube oEmbed fallback succeeded!");
+        return NextResponse.json({
+          success: true,
+          data: oembedData,
+        });
+      }
     }
 
-    return NextResponse.json({
-      success: true,
-      data: normalizedData,
-    });
+    // If all pipelines failed
+    console.error("[Snaptap /api/extract] All extraction pipelines failed for URL:", inputUrl);
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          "Could not extract video stream. The media host may be blocking requests or the video is private.",
+      },
+      { status: 404 }
+    );
   } catch (error: unknown) {
-    console.error("Unhandled error in /api/extract:", error);
     const message =
       error instanceof Error ? error.message : "Internal extraction error occurred.";
+    console.error("[Snaptap /api/extract] Uncaught server error:", message);
     return NextResponse.json(
       {
         success: false,
