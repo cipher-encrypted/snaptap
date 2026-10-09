@@ -52,38 +52,61 @@ export function MediaResultCard({ data, onReset }: MediaResultCardProps) {
     thumbY.set(0);
   };
 
-  const handleTriggerDownload = (option: DownloadOption) => {
+  const handleTriggerDownload = async (option: DownloadOption) => {
     setDownloadingType(option.extension);
 
     // Fire metallic, gold & white luxury confetti
     confetti({
-      particleCount: 90,
-      spread: 75,
+      particleCount: 85,
+      spread: 70,
       origin: { y: 0.65 },
       colors: ["#ffffff", "#fef08a", "#d4d4d8", "#e4e4e7", "#a1a1aa"],
       disableForReducedMotion: true,
     });
 
-    // Generate direct download streaming endpoint URL with clean filename
-    const downloadUrl = `/api/proxy-download?url=${encodeURIComponent(
+    const cleanFileName =
+      data.title
+        .replace(/[^\w\s-]/g, "")
+        .trim()
+        .replace(/\s+/g, "_")
+        .slice(0, 80) || "snaptap_media";
+
+    // Direct Stream Handling: Pipe via internal Next.js proxy route
+    const proxyUrl = `/api/proxy-download?url=${encodeURIComponent(
       option.url
-    )}&title=${encodeURIComponent(data.title)}&ext=${option.extension}`;
+    )}&title=${encodeURIComponent(cleanFileName)}&ext=${option.extension}`;
 
-    // Invisible anchor technique triggers native download without redirecting or opening blank tab
-    const anchor = document.createElement("a");
-    anchor.href = downloadUrl;
-    anchor.download = `${data.title.replace(/[^a-zA-Z0-9_-]/g, "_")}.${option.extension}`;
-    anchor.style.display = "none";
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
+    try {
+      const response = await fetch(proxyUrl);
+      if (!response.ok) {
+        throw new Error(`Proxy stream responded with ${response.status}`);
+      }
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = `${cleanFileName}.${option.extension}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
 
-    // Set micro visual feedback
-    setTimeout(() => {
       setDownloadingType(null);
       setDownloadSuccess(option.extension);
       setTimeout(() => setDownloadSuccess(null), 3000);
-    }, 1200);
+    } catch (err) {
+      console.warn("Client blob fetch failed, falling back to direct anchor:", err);
+      // Fallback: force download via anchor without redirecting to external sites
+      const link = document.createElement("a");
+      link.href = proxyUrl;
+      link.setAttribute("download", `${cleanFileName}.${option.extension}`);
+      link.target = "_blank";
+      link.click();
+
+      setDownloadingType(null);
+      setDownloadSuccess(option.extension);
+      setTimeout(() => setDownloadSuccess(null), 3000);
+    }
   };
 
   // Find best video and audio download options

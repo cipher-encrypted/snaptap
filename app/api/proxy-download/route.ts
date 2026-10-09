@@ -10,7 +10,10 @@ export async function GET(req: NextRequest) {
     const extension = searchParams.get("ext") || "mp4";
 
     if (!mediaUrl) {
-      return new NextResponse("Missing 'url' query parameter", { status: 400 });
+      return new NextResponse(
+        JSON.stringify({ error: "Missing 'url' query parameter" }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     // Clean & sanitize filename
@@ -20,20 +23,6 @@ export async function GET(req: NextRequest) {
         .trim()
         .replace(/\s+/g, "_")
         .slice(0, 80) || "snaptap_download";
-
-    // If mediaUrl is an HTML page URL (e.g. YouTube watch link when stream couldn't be extracted directly)
-    if (
-      mediaUrl.includes("youtube.com/watch") ||
-      mediaUrl.includes("youtu.be/") ||
-      mediaUrl.includes("youtube.com/shorts/")
-    ) {
-      const match = mediaUrl.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-      const videoId = match ? match[1] : "";
-      if (videoId) {
-        return NextResponse.redirect(`https://www.y2mate.com/youtube/${videoId}`);
-      }
-      return NextResponse.redirect(mediaUrl);
-    }
 
     // Set request headers to bypass CDN referrer and bot blocks
     let referer = "https://www.google.com";
@@ -63,12 +52,18 @@ export async function GET(req: NextRequest) {
 
     const upstreamContentType = upstreamRes.headers.get("content-type") || "";
 
-    // If stream is empty, failed, or returned an HTML error page, fallback to redirect
-    if (!upstreamRes.ok || upstreamContentType.includes("text/html") || !upstreamRes.body) {
+    // If stream is empty, failed, or returned an HTML error page
+    if (!upstreamRes.ok || !upstreamRes.body || upstreamContentType.includes("text/html")) {
       console.warn(
-        `[Proxy-Download] Upstream fetch status ${upstreamRes.status} for ${mediaUrl}. Redirecting directly.`
+        `[Proxy-Download] Upstream fetch failed for ${mediaUrl}: status ${upstreamRes.status}`
       );
-      return NextResponse.redirect(mediaUrl);
+      return new NextResponse(
+        JSON.stringify({
+          error:
+            "Media stream is currently inaccessible from the upstream provider. Please try another link.",
+        }),
+        { status: 502, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     const isAudio =
@@ -105,10 +100,9 @@ export async function GET(req: NextRequest) {
       throw error;
     }
     console.error("[Proxy-Download] Proxy error:", error);
-    const mediaUrl = req.nextUrl.searchParams.get("url");
-    if (mediaUrl) {
-      return NextResponse.redirect(mediaUrl);
-    }
-    return new NextResponse("Failed to download media file", { status: 500 });
+    return new NextResponse(
+      JSON.stringify({ error: "Failed to pipe download media stream." }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
   }
 }

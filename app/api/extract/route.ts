@@ -303,51 +303,6 @@ async function queryCobaltFallback(
   return null;
 }
 
-// Fallback: Resolve YouTube oEmbed & direct stream
-async function resolveYouTubeOembed(
-  targetUrl: string
-): Promise<ExtractedMediaData | null> {
-  try {
-    console.log(`[Snaptap /api/extract] Resolving YouTube oEmbed for: ${targetUrl}`);
-    const oembedRes = await fetch(
-      `https://www.youtube.com/oembed?url=${encodeURIComponent(targetUrl)}&format=json`,
-      { signal: AbortSignal.timeout(3500) }
-    );
-    const oembed = await oembedRes.json().catch(() => null);
-    if (!oembed || !oembed.title) return null;
-
-    const match = targetUrl.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-    const videoId = match ? match[1] : "video";
-
-    return {
-      id: videoId,
-      title: oembed.title,
-      uploader: oembed.author_name || "YouTube Creator",
-      thumbnail:
-        oembed.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-      duration: "HD",
-      platform: "youtube",
-      downloadOptions: [
-        {
-          label: "Best Quality MP4",
-          url: `https://www.youtube.com/watch?v=${videoId}`,
-          type: "video",
-          extension: "mp4",
-        },
-        {
-          label: "Audio Only MP3",
-          url: `https://www.youtube.com/watch?v=${videoId}`,
-          type: "audio",
-          extension: "mp3",
-        },
-      ],
-    };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.log("[Snaptap /api/extract] YouTube oEmbed fallback failed:", msg);
-    return null;
-  }
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -481,18 +436,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 3. Fallback: For YouTube, resolve via oEmbed metadata if scrapers are bot-blocked
-    if (platform === "youtube") {
-      console.log("[Snaptap /api/extract] Initiating YouTube oEmbed fallback...");
-      const oembedData = await resolveYouTubeOembed(inputUrl);
-      if (oembedData) {
-        console.log("[Snaptap /api/extract] YouTube oEmbed fallback succeeded!");
-        return NextResponse.json({
-          success: true,
-          data: oembedData,
-        });
-      }
-    }
 
     // If all pipelines failed
     console.error("[Snaptap /api/extract] All extraction pipelines failed for URL:", inputUrl);
