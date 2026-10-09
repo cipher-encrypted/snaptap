@@ -72,7 +72,7 @@ export function Navbar() {
             </div>
 
             <a
-              href="https://github.com"
+              href="https://github.com/cipher-encrypted/snaptap"
               target="_blank"
               rel="noopener noreferrer"
               aria-label="View Snaptap on GitHub"
