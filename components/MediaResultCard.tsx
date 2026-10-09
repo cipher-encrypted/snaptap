@@ -52,7 +52,7 @@ export function MediaResultCard({ data, onReset }: MediaResultCardProps) {
     thumbY.set(0);
   };
 
-  const handleTriggerDownload = async (option: DownloadOption) => {
+  const handleTriggerDownload = (option: DownloadOption) => {
     setDownloadingType(option.extension);
 
     // Fire metallic, gold & white luxury confetti
@@ -69,44 +69,23 @@ export function MediaResultCard({ data, onReset }: MediaResultCardProps) {
         .replace(/[^\w\s-]/g, "")
         .trim()
         .replace(/\s+/g, "_")
-        .slice(0, 80) || "snaptap_media";
+        .slice(0, 80) || "snaptap_download";
 
-    // Direct Stream Handling: Pipe via internal Next.js proxy route
-    const proxyUrl = `/api/proxy-download?url=${encodeURIComponent(
-      option.url
-    )}&title=${encodeURIComponent(cleanFileName)}&ext=${option.extension}`;
+    // Directly trigger Apify storage link via anchor tag
+    const link = document.createElement("a");
+    link.href = option.url;
+    link.setAttribute("download", `${cleanFileName}.${option.extension}`);
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
 
-    try {
-      const response = await fetch(proxyUrl);
-      if (!response.ok) {
-        throw new Error(`Proxy stream responded with ${response.status}`);
-      }
-      const blob = await response.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = `${cleanFileName}.${option.extension}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(blobUrl);
-
+    setTimeout(() => {
       setDownloadingType(null);
       setDownloadSuccess(option.extension);
       setTimeout(() => setDownloadSuccess(null), 3000);
-    } catch (err) {
-      console.warn("Client blob fetch failed, falling back to direct anchor:", err);
-      // Fallback: force download via anchor without redirecting to external sites
-      const link = document.createElement("a");
-      link.href = proxyUrl;
-      link.setAttribute("download", `${cleanFileName}.${option.extension}`);
-      link.target = "_blank";
-      link.click();
-
-      setDownloadingType(null);
-      setDownloadSuccess(option.extension);
-      setTimeout(() => setDownloadSuccess(null), 3000);
-    }
+    }, 1000);
   };
 
   // Find best video and audio download options
