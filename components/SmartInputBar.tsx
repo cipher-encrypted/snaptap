@@ -2,9 +2,9 @@
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion, useMotionValue, useSpring, useTransform, AnimatePresence } from "framer-motion";
-import { Clipboard, Check, ArrowRight, Loader2, AlertCircle, X, Sparkles, Download, Music, Video, RefreshCw } from "lucide-react";
-import confetti from "canvas-confetti";
+import { Clipboard, Check, ArrowRight, Loader2, AlertCircle, X } from "lucide-react";
 import { PlatformIcon, type SupportedPlatform } from "@/components/PlatformIcons";
+import { MediaResultCard, type ExtractedMediaData } from "@/components/MediaResultCard";
 
 const SAMPLE_URLS: Record<Exclude<SupportedPlatform, null>, string> = {
   instagram: "https://www.instagram.com/reel/C7xPqLrvN8z/",
@@ -40,28 +40,26 @@ const PLATFORMS_META = [
   },
 ];
 
-interface ExtractedAsset {
-  platform: SupportedPlatform;
-  title: string;
-  duration: string;
-  resolution: string;
-  author: string;
-  url: string;
-}
+const LOADING_STAGES = [
+  "Connecting to stream...",
+  "Bypassing compression...",
+  "Generating download stream...",
+];
 
 export function SmartInputBar() {
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStepIndex, setLoadingStepIndex] = useState(0);
   const [detectedPlatform, setDetectedPlatform] = useState<SupportedPlatform>(null);
   const [error, setError] = useState<string | null>(null);
   const [copiedState, setCopiedState] = useState(false);
-  const [extractedAsset, setExtractedAsset] = useState<ExtractedAsset | null>(null);
+  const [extractedData, setExtractedData] = useState<ExtractedMediaData | null>(null);
   const [isTouchDevice, setIsTouchDevice] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // 3D Tilt Physics
+  // 3D Tilt Physics for the main Smart Bar
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
   const springX = useSpring(mouseX, { damping: 25, stiffness: 200 });
@@ -70,7 +68,7 @@ export function SmartInputBar() {
   const rotateY = useTransform(springX, [-0.5, 0.5], [-6, 6]);
   const [glarePosition, setGlarePosition] = useState({ x: 50, y: 50 });
 
-  // Detect touch devices to disable heavy tilt for 60fps mobile fluid performance
+  // Detect touch devices to disable heavy tilt for 60fps performance
   useEffect(() => {
     const isTouch =
       "ontouchstart" in window ||
@@ -78,6 +76,22 @@ export function SmartInputBar() {
       window.matchMedia("(pointer: coarse)").matches;
     setIsTouchDevice(isTouch);
   }, []);
+
+  // Multi-step loading progression timer
+  useEffect(() => {
+    if (!isLoading) {
+      setLoadingStepIndex(0);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setLoadingStepIndex((prev) =>
+        prev < LOADING_STAGES.length - 1 ? prev + 1 : prev
+      );
+    }, 1800);
+
+    return () => clearInterval(interval);
+  }, [isLoading]);
 
   const detectPlatform = useCallback((inputUrl: string): SupportedPlatform => {
     const clean = inputUrl.trim().toLowerCase();
@@ -135,7 +149,7 @@ export function SmartInputBar() {
   const handleExtract = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!url.trim()) {
-      setError("Please paste a media URL to extract.");
+      setError("Please enter a media URL to extract.");
       inputRef.current?.focus();
       return;
     }
@@ -148,37 +162,30 @@ export function SmartInputBar() {
 
     setError(null);
     setIsLoading(true);
+    setLoadingStepIndex(0);
 
-    // Simulate extraction processing with spatial feedback
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1100));
-
-      // Trigger tactile victory confetti
-      confetti({
-        particleCount: 80,
-        spread: 70,
-        origin: { y: 0.65 },
-        colors: ["#ffffff", "#a1a1aa", "#38bdf8", "#ec4899", "#ef4444"],
-        disableForReducedMotion: true,
+      const response = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url.trim() }),
       });
 
-      const sampleTitles: Record<Exclude<SupportedPlatform, null>, { title: string; author: string }> = {
-        instagram: { title: "Architectural Symmetry in Kyoto • Spatial 4K", author: "@spatial_lens" },
-        tiktok: { title: "Ultra-Fast Cinematic Camera Transitions", author: "@fluid_motion" },
-        youtube: { title: "The Aesthetics of Minimalist Engineering", author: "Linear Lab" },
-        x: { title: "Apple Vision Pro Spatial UI Motion Breakdown", author: "@motiondesign" },
-      };
+      const payload = await response.json();
 
-      setExtractedAsset({
-        platform,
-        title: sampleTitles[platform].title,
-        duration: "00:42",
-        resolution: "1080p 60fps • HDR",
-        author: sampleTitles[platform].author,
-        url: url.trim(),
-      });
-    } catch {
-      setError("Failed to resolve media stream. Please check link accessibility.");
+      if (!response.ok || !payload.success) {
+        throw new Error(
+          payload.error || "Failed to extract media. The link may be private or inaccessible."
+        );
+      }
+
+      setExtractedData(payload.data);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "An unexpected error occurred while extracting the media.";
+      setError(message);
     } finally {
       setIsLoading(false);
     }
@@ -195,7 +202,7 @@ export function SmartInputBar() {
   const handleReset = () => {
     setUrl("");
     setDetectedPlatform(null);
-    setExtractedAsset(null);
+    setExtractedData(null);
     setError(null);
     inputRef.current?.focus();
   };
@@ -203,10 +210,7 @@ export function SmartInputBar() {
   return (
     <div className="w-full max-w-2xl mx-auto flex flex-col items-center">
       {/* 3D Perspective Card Wrapper */}
-      <div
-        style={{ perspective: 1000 }}
-        className="w-full relative"
-      >
+      <div style={{ perspective: 1000 }} className="w-full relative">
         <motion.div
           ref={containerRef}
           onMouseMove={handleMouseMove}
@@ -231,8 +235,24 @@ export function SmartInputBar() {
           {/* Smart Bar Main Deck */}
           <form
             onSubmit={handleExtract}
-            className="relative flex items-center gap-2 sm:gap-3 rounded-2xl border border-white/10 bg-zinc-900/60 p-2 sm:p-2.5 backdrop-blur-xl shadow-2xl transition-all duration-300 focus-within:border-white/25 focus-within:shadow-[0_0_35px_rgba(255,255,255,0.06)]"
+            className="relative flex items-center gap-2 sm:gap-3 rounded-2xl border border-white/10 bg-zinc-900/60 p-2 sm:p-2.5 backdrop-blur-xl shadow-2xl transition-all duration-300 focus-within:border-white/25 focus-within:shadow-[0_0_35px_rgba(255,255,255,0.06)] overflow-hidden"
           >
+            {/* Indeterminate Pulsing Progress Bar when loading */}
+            {isLoading && (
+              <div className="absolute inset-x-0 bottom-0 h-[2px] bg-white/10 overflow-hidden">
+                <motion.div
+                  className="h-full bg-gradient-to-r from-transparent via-white to-transparent"
+                  initial={{ x: "-100%" }}
+                  animate={{ x: "100%" }}
+                  transition={{
+                    repeat: Infinity,
+                    duration: 1.4,
+                    ease: "easeInOut",
+                  }}
+                />
+              </div>
+            )}
+
             {/* Dynamic Platform Indicator Icon */}
             <div className="relative flex h-10 w-10 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-zinc-800/60 transition-transform duration-200">
               <AnimatePresence mode="wait">
@@ -244,7 +264,10 @@ export function SmartInputBar() {
                   transition={{ duration: 0.18 }}
                   className="flex items-center justify-center"
                 >
-                  <PlatformIcon platform={detectedPlatform} className="h-5 w-5 sm:h-5 sm:w-5" />
+                  <PlatformIcon
+                    platform={detectedPlatform}
+                    className="h-5 w-5 sm:h-5 sm:w-5"
+                  />
                 </motion.div>
               </AnimatePresence>
             </div>
@@ -255,15 +278,16 @@ export function SmartInputBar() {
                 ref={inputRef}
                 type="url"
                 value={url}
+                disabled={isLoading}
                 onChange={handleInputChange}
                 placeholder="Paste video link from Instagram, TikTok, YouTube, or X..."
-                className="w-full bg-transparent px-1 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none transition-colors selection:bg-white/20"
+                className="w-full bg-transparent px-1 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none transition-colors selection:bg-white/20 disabled:opacity-60"
                 autoComplete="off"
                 spellCheck="false"
               />
 
-              {/* Clear button when URL is entered */}
-              {url && (
+              {/* Clear button when URL is entered and not busy */}
+              {url && !isLoading && (
                 <button
                   type="button"
                   onClick={() => {
@@ -280,24 +304,26 @@ export function SmartInputBar() {
             </div>
 
             {/* Quick-action Paste Button */}
-            <button
-              type="button"
-              onClick={handlePaste}
-              title="Paste from clipboard"
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-800/40 px-3 py-2 text-xs font-medium text-zinc-300 transition-all hover:border-white/20 hover:bg-zinc-800/80 hover:text-white active:scale-95 shrink-0"
-            >
-              {copiedState ? (
-                <>
-                  <Check className="h-3.5 w-3.5 text-emerald-400" />
-                  <span className="text-emerald-400">Pasted</span>
-                </>
-              ) : (
-                <>
-                  <Clipboard className="h-3.5 w-3.5 text-zinc-400" />
-                  <span>Paste</span>
-                </>
-              )}
-            </button>
+            {!isLoading && (
+              <button
+                type="button"
+                onClick={handlePaste}
+                title="Paste from clipboard"
+                className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-zinc-800/40 px-3 py-2 text-xs font-medium text-zinc-300 transition-all hover:border-white/20 hover:bg-zinc-800/80 hover:text-white active:scale-95 shrink-0"
+              >
+                {copiedState ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    <span className="text-emerald-400">Pasted</span>
+                  </>
+                ) : (
+                  <>
+                    <Clipboard className="h-3.5 w-3.5 text-zinc-400" />
+                    <span>Paste</span>
+                  </>
+                )}
+              </button>
+            )}
 
             {/* Tactile Action Button */}
             <motion.button
@@ -309,7 +335,9 @@ export function SmartInputBar() {
               {isLoading ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin text-zinc-900" />
-                  <span>Extracting</span>
+                  <span className="min-w-[120px] text-left text-xs font-medium text-zinc-900">
+                    {LOADING_STAGES[loadingStepIndex]}
+                  </span>
                 </>
               ) : (
                 <>
@@ -347,79 +375,12 @@ export function SmartInputBar() {
         )}
       </AnimatePresence>
 
-      {/* Extracted Asset Stage Preview (when extraction succeeds) */}
+      {/* 3D Holographic Media Result Deck (When Media is Extracted) */}
       <AnimatePresence>
-        {extractedAsset && (
-          <motion.div
-            initial={{ opacity: 0, y: 16, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.96 }}
-            transition={{ type: "spring", damping: 20, stiffness: 220 }}
-            className="w-full mt-6 rounded-2xl border border-white/15 bg-gradient-to-b from-[#141418] to-[#0c0c0f] p-5 backdrop-blur-2xl shadow-[0_25px_60px_rgba(0,0,0,0.7)]"
-          >
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-              <div className="flex items-start gap-3.5">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-zinc-800/80 shadow-inner">
-                  <PlatformIcon platform={extractedAsset.platform} className="h-6 w-6" />
-                </div>
-                <div className="text-left space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] font-semibold tracking-wide uppercase text-zinc-400">
-                      {extractedAsset.platform}
-                    </span>
-                    <span className="text-zinc-600">&bull;</span>
-                    <span className="text-[11px] font-medium text-emerald-400">
-                      Resolved Lossless
-                    </span>
-                  </div>
-                  <h3 className="text-sm font-semibold text-white line-clamp-1">
-                    {extractedAsset.title}
-                  </h3>
-                  <div className="flex items-center gap-3 text-[11px] text-zinc-400">
-                    <span>{extractedAsset.author}</span>
-                    <span>&bull;</span>
-                    <span>{extractedAsset.duration}</span>
-                    <span>&bull;</span>
-                    <span className="rounded bg-white/5 px-1.5 py-0.5 text-zinc-300 font-mono">
-                      {extractedAsset.resolution}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex items-center gap-2 w-full sm:w-auto">
-                <button
-                  type="button"
-                  onClick={() => {
-                    confetti({ particleCount: 40, spread: 50, origin: { y: 0.8 } });
-                  }}
-                  className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-white transition-all hover:bg-white/10 hover:border-white/20 active:scale-95"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  <span>MP4 Video</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    confetti({ particleCount: 30, spread: 40, origin: { y: 0.8 } });
-                  }}
-                  className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-zinc-300 transition-all hover:bg-white/10 hover:border-white/20 active:scale-95"
-                >
-                  <Music className="h-3.5 w-3.5" />
-                  <span>Audio MP3</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleReset}
-                  title="Extract another link"
-                  className="flex items-center justify-center h-8 w-8 rounded-xl border border-white/10 bg-zinc-800/40 text-zinc-400 hover:text-white hover:bg-zinc-800/80 transition-colors"
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          </motion.div>
+        {extractedData && (
+          <div className="w-full mt-6">
+            <MediaResultCard data={extractedData} onReset={handleReset} />
+          </div>
         )}
       </AnimatePresence>
 
@@ -440,7 +401,10 @@ export function SmartInputBar() {
                       item.accent
                 }`}
               >
-                <PlatformIcon platform={item.id} className="h-3.5 w-3.5 transition-transform duration-200 group-hover:scale-110" />
+                <PlatformIcon
+                  platform={item.id}
+                  className="h-3.5 w-3.5 transition-transform duration-200 group-hover:scale-110"
+                />
                 <span className="font-medium">{item.name}</span>
                 <span className="hidden sm:inline-block text-[10px] text-zinc-500 transition-colors group-hover:text-zinc-400">
                   &bull; {item.tagline}
