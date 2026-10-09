@@ -65,7 +65,7 @@ export function MediaResultCard({ data, onReset }: MediaResultCardProps) {
     });
 
     // Generate direct download streaming endpoint URL with clean filename
-    const downloadUrl = `/api/download?url=${encodeURIComponent(
+    const downloadUrl = `/api/proxy-download?url=${encodeURIComponent(
       option.url
     )}&title=${encodeURIComponent(data.title)}&ext=${option.extension}`;
 
